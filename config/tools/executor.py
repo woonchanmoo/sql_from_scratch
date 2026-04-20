@@ -2,14 +2,17 @@ from config.tools.query_tools import *
 from config.messages.messages import *
 PROMPT = "DB_2019-14473> "
 
+# MyTransformer로 부터 반환된 파싱 결과를 실제 DB 실행으로 매핑하는 클래스
 class QueryExecutor:
     def __init__(self, env):
         self.env = env
 
     def execute(self, query):
+        """Execute a parsed query by delegating to the appropriate query handler."""
         with self.env.begin(write=True) as txn:
             qtype = str(query["type"]).strip()
 
+            # query type이 create_table이면, create_table 함수를 호출한다.
             if qtype == "create_table":
                 return create_table(txn, query["schema"])
 
@@ -42,10 +45,6 @@ class QueryExecutor:
 
             # else:
             #     raise Exception(f"Unknown query type: {qtype}")
-            
-            # 앞으로 계속 추가
-            # elif query["type"] == "SELECT":
-            # elif query["type"] == "INSERT":
 
 
 def print_execute(res: ExecutionResult):

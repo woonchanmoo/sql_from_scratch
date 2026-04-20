@@ -1,3 +1,5 @@
+# errors.py
+# 사용자 정의 예외 타입을 선언하여 validation 및 쿼리 실행 실패를 구분합니다.
 class SyntaxError(Exception): pass
 
 class DuplicateColumnDefError(Exception): pass

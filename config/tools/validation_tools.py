@@ -6,6 +6,7 @@ from config.tools.basic_tools import *
 # 🔹 COMMON UTIL
 ##################################################
 
+# 데이터 타입 비교를 지원하는 헬퍼 (int, date, char(n) 비교)
 def is_same_type(t1, t2):
     if t1 == t2:
         return True
@@ -190,11 +191,12 @@ def validate_select_table(txn, table_name):
 # Validate CREATE TABLE
 ##################################################
 def validate_create(txn, schema):
+    # CREATE TABLE 처리 시 필요한 모든 제약 조건을 순차적으로 확인
 
-    # 1.
+    # 1. 테이블 이름 중복 확인
     validate_table_not_exists(txn, schema["table_name"])
     
-    # 2. 
+    # 2. 컬럼 중복 확인
     validate_columns(schema["column_names"])
 
     # 3.

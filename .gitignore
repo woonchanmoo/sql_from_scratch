@@ -5,6 +5,7 @@
 *.log
 *.pdf
 *.ipynb
+*.docx
 
 # 특정 폴더 무시
 DB/

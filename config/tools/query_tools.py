@@ -2,7 +2,11 @@ from config.tools.validation_tools import *
 from config.tools.basic_tools import *
 from config.messages.messages import *
 
+# query_tools는 실제 쿼리 수행 로직을 담고 있다.
+# 각 함수는 validation을 먼저 수행한 뒤 트랜잭션에서 메타/데이터 조작을 수행한다.
+
 def create_table(txn, schema):
+    """Validate schema and create a new table metadata entry."""
     try:
         validate_create(txn, schema)
         
@@ -47,6 +51,7 @@ def drop_table(txn, table_name):
         return ExecutionResult(error=e)
     
 def explain_table(txn, table_name, commandType):
+    """Print table schema details for EXPLAIN / DESCRIBE / DESC commands."""
     try:
         # 1. Validation
         if commandType == "explain":
@@ -123,6 +128,7 @@ def explain_table(txn, table_name, commandType):
         return ExecutionResult(error=e)
     
 def show_tables(txn):
+    """Print the list of tables currently registered in the database."""
     try:
         tables = get_tables(txn)
         print("-" * 65)
@@ -145,6 +151,7 @@ def show_tables(txn):
         return ExecutionResult(error=e) 
     
 def insert_into_table(txn, insert_schema):
+    """Insert a row into a table, mapping given values to target columns."""
     try:
         table_name = insert_schema.get("table_name", "")
         # 사용자가 명시한 컬럼 리스트 (없으면 None)
@@ -198,6 +205,7 @@ def insert_into_table(txn, insert_schema):
         return ExecutionResult(error=e)
     
 def select_table(txn, select_schema):
+    """Validate and display rows for a SELECT query from one or more tables."""
     try:
         table_names = select_schema["from_list"]
 
@@ -253,6 +261,7 @@ def select_table(txn, select_schema):
         return ExecutionResult(error=e)
     
 def rename_table(txn, rename_schema):
+    """Rename a table and update related metadata, foreign keys, counters, and data keys."""
     try:
         old_name = rename_schema.get("old_name")
         new_name = rename_schema.get("new_name")
@@ -289,6 +298,7 @@ def rename_table(txn, rename_schema):
         return ExecutionResult(error=e)
     
 def truncate_table(txn, table_name):
+    """Remove all rows from a table and reset its counter."""
     
     try:
         # 1. validation

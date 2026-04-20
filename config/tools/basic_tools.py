@@ -1,5 +1,7 @@
 import json
 
+# basic_tools는 테이블 목록, 스키마, 데이터 저장소와 관련된 공통 헬퍼를 제공한다.
+
 # 1. meta:tables
 # 1.1. convert tables set into list and put it into meta:tables
 def add_tables(txn, table_name: str):
@@ -51,6 +53,7 @@ def delete_schema(txn, table_name: str):
 
 # 2.4. update foreign keys
 def update_foreign_keys(txn, old_name: str, new_name: str):
+    # 테이블 이름 변경 시, 외래키 참조 테이블 이름을 모두 업데이트
     tables = get_tables(txn)
 
     for table in tables:

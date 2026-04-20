@@ -1,3 +1,5 @@
+# run.py
+# 메인 실행 스크립트: SQL 입력을 받아 파싱하고, Transformer 결과를 DB에 실행합니다.
 from lark import Lark
 from parser.sql_transformer import MyTransformer
 from config.tools.executor import *

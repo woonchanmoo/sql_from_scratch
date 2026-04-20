@@ -1,6 +1,7 @@
 # message.py
 from config.messages.errors import *
 
+# Result 객체는 쿼리 실행 성공 시 반환할 결과 타입과 데이터를 담는다.
 class Result:
     def __init__(self, type, data=None):
         self.type = type
@@ -13,6 +14,7 @@ class ExecutionResult:
 
     @property
     def is_success(self):
+        # error가 없으면 성공으로 간주
         return self.error is None
 
 # ------------------------
@@ -20,6 +22,7 @@ class ExecutionResult:
 # ------------------------
 
 def format_success(res: Result):
+    """성공 결과 객체를 사용자 친화적인 메시지 문자열로 변환."""
     if res.type == "CreateTableSuccess":
         return f"'{res.data}' table is created"
 
@@ -56,6 +59,7 @@ def format_success(res: Result):
 # ------------------------
 
 def format_error(e: Exception):
+    """예외 객체를 사용자에게 보여줄 에러 메시지로 변환."""
     if isinstance(e, SyntaxError):
         return "Syntax error"
 

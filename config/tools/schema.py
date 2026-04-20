@@ -1,3 +1,5 @@
+# schema.py
+# 예시 테이블 스키마를 보여주는 샘플 데이터 구조입니다.
 schema = {
     "table_name": "student",
     "columns": {
