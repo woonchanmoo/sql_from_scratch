@@ -30,7 +30,7 @@ def format_success(res: Result):
         return f"'{res.data}' table is dropped"
 
     elif res.type == "InsertResult":
-        return "The row is inserted"
+        return "1 row inserted"
 
     elif res.type == "RenameSuccess":
         return f"'{res.data}' is renamed"
@@ -49,6 +49,13 @@ def format_success(res: Result):
     
     elif res.type == "SelectSuccess":
         return ""
+
+    # 1-3
+    elif res.type == "DeleteResult":
+        return f"'{res.data}' row(s) deleted"
+
+    elif res.type == "DeleteReferentialIntegrityPassed":
+        return f"'{res.data}' row(s) are not deleted due to referential integrity"
 
     else:
         return "Unknown success"
@@ -104,6 +111,38 @@ def format_error(e: Exception):
 
     elif isinstance(e, TruncateReferencedTableError):
         return f"Truncate table has failed: '{e.tableName}' is referenced by another table"
+
+    # 1-3
+
+    elif isinstance(e, InsertTypeMismatchError):
+        return "Insert has failed: types are not matched"
+
+    elif isinstance(e, InsertColumnExistenceError):
+        return f"Insert has failed: '{e.colName}' does not exist"
+
+    elif isinstance(e, InsertColumnNonNullableError):
+        return f"Insert has failed: '{e.colName}' is not nullable"
+
+    elif isinstance(e, SelectColumnResolveError):
+        return f"Select has failed: fail to resolve '{e.colName}'"
+
+    elif isinstance(e, SelectColumnNotGrouped):
+        return f"Select has failed: column '{e.colName}' must either be included in the GROUP BY clause or be used in an aggregate function"
+
+    elif isinstance(e, TableNotSpecified):
+        return f"{e.clauseName} clause trying to reference tables which are not specified"
+
+    elif isinstance(e, ColumnNotExist):
+        return f"{e.clauseName} clause trying to reference non existing column"
+
+    elif isinstance(e, AmbiguousReference):
+        return f"{e.clauseName} clause contains ambiguous column reference"
+
+    elif isinstance(e, IncomparableError):
+        return "Trying to compare incomparable columns or values"
+
+    elif isinstance(e, InvalidLimitOffsetError):
+        return "Select has failed: LIMIT/OFFSET clause should be a non-negative integer"
 
     else:
         return f"unknown error in validation: {e}"

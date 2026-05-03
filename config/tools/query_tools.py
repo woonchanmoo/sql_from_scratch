@@ -158,22 +158,19 @@ def insert_into_table(txn, insert_schema):
         input_columns = insert_schema.get("column_names") 
         values = insert_schema.get("values", [])
 
-        # 1. Validation (테이블 존재 여부 등)
-        validate_insert(txn, table_name)
-
-        # 2. 테이블 스키마 가져오기
+        # 1. 테이블 스키마 가져오기
         schema = get_schema(txn, table_name)
         all_column_names = schema.get("column_names", [])
         columns_info = schema.get("columns", {})
 
-        # 3. 삽입될 컬럼 순서 결정 및 매핑 딕셔너리 생성
+        # 2. 삽입될 컬럼 순서 결정 및 매핑 딕셔너리 생성
         # 예: {"col1": "val1", "col2": "val2"}
         target_columns = input_columns if input_columns else all_column_names
         
         # 입력된 컬럼-값 쌍을 매핑 (나중에 찾기 쉽게)
         input_data_map = dict(zip(target_columns, values))
 
-        # 4. 전체 컬럼 순서에 맞춰 데이터 준비 (Truncate 포함)
+        # 3. 전체 컬럼 순서에 맞춰 데이터 준비 (Truncate 포함)
         processed_values = []
         for col_name in all_column_names:
             col_meta = columns_info.get(col_name)
@@ -193,6 +190,9 @@ def insert_into_table(txn, insert_schema):
             else:
                 # 값이 명시되지 않은 컬럼은 NULL(None) 삽입
                 processed_values.append(None)
+
+        # 4. Validation (테이블 존재 여부 등)
+        validate_insert(txn, table_name, input_columns, values, all_column_names, processed_values, columns_info)
 
         # 5. Row 삽입
         add_row(txn, table_name, processed_values)

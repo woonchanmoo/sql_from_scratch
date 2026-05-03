@@ -1,5 +1,6 @@
 from config.messages.errors import *
 from config.tools.basic_tools import *
+import re
 
 
 ##################################################
@@ -172,6 +173,8 @@ def validate_rename_table(txn, new_table_name):
     if new_table_name in tables:
         raise RenameAlreadyExistError(new_table_name)
 
+# 3-1
+
 
 ##################################################
 # 🔹 SELECT VALIDATION
@@ -183,9 +186,13 @@ def validate_select_table(txn, table_name):
     if table_name not in tables:
         raise SelectTableExistenceError(table_name)
 
-##################################################
-# 🔹 ORCHESTRATORS
-##################################################
+
+# ORCHESTRATORS
+##############################################################################################################################
+##############################################################################################################################
+##############################################################################################################################
+##############################################################################################################################
+##############################################################################################################################
 
 ##################################################
 # Validate CREATE TABLE
@@ -276,5 +283,62 @@ def validate_select(txn, table_name):
 ##################################################
 # Validate INSERT
 ##################################################
-def validate_insert(txn, table_name):
+def validate_insert(txn, table_name, input_columns, values, all_column_names, processed_values, columns_info):
     validate_table_exists(txn, table_name, "Insert into")
+    # Additional INSERT-specific validations are handled by helper functions.
+    # Implement these helper functions later to support count, existence,
+    # type mismatch, and non-null constraints.
+
+    validate_insert_column_count(input_columns, values, all_column_names)
+
+    validate_insert_column_existence(input_columns, all_column_names)
+
+    validate_insert_type_mismatch(all_column_names, processed_values, columns_info)
+
+    validate_insert_non_nullable(all_column_names, processed_values, columns_info)
+
+
+def validate_insert_column_count(input_columns, values, all_column_names):
+    """Validate the number of columns and values for INSERT."""
+    if input_columns is None:
+        # No explicit column list: values must match the table's full columns.
+        if len(values) != len(all_column_names):
+            raise InsertTypeMismatchError()
+    else:
+        # Explicit column list: each specified column must have a matching value.
+        if len(input_columns) != len(values):
+            raise InsertTypeMismatchError()
+
+
+def validate_insert_column_existence(input_columns, all_column_names):
+    """Validate that all explicitly listed columns exist."""
+    if input_columns is not None:
+        for col in input_columns:
+            if col not in all_column_names:
+                raise InsertColumnExistenceError(col)
+
+
+def validate_insert_type_mismatch(all_column_names, processed_values, columns_info):
+    """Validate that provided values match the target column types."""
+    for i, col_name in enumerate(all_column_names):
+        val = processed_values[i]
+        col_type = columns_info[col_name]["type"]
+
+        if val is not None:
+            if col_type == "int":
+                if not isinstance(val, int):
+                    raise InsertTypeMismatchError()
+            elif col_type == "date":
+                if not isinstance(val, str) or not re.match(r'^\d{4}-\d{2}-\d{2}$', val):
+                    raise InsertTypeMismatchError()
+            elif isinstance(col_type, dict) and col_type.get("base") == "char":
+                if not isinstance(val, str):
+                    raise InsertTypeMismatchError()
+            # Add more type checks as needed
+
+
+def validate_insert_non_nullable(all_column_names, processed_values, columns_info):
+    """Validate that non-nullable columns are not assigned NULL."""
+    for i, col_name in enumerate(all_column_names):
+        if columns_info[col_name]["not_null"] and processed_values[i] is None:
+            raise InsertColumnNonNullableError(col_name)

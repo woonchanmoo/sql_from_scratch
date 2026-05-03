@@ -1,14 +1,14 @@
 # run.py
 # 메인 실행 스크립트: SQL 입력을 받아 파싱하고, Transformer 결과를 DB에 실행합니다.
 from lark import Lark
-from parser.sql_transformer import MyTransformer
+from config.transformer.sql_transformer import MyTransformer
 from config.tools.executor import *
 import lmdb
 
 ###############################################################################################
 ### 1. Lark
 # Lark File의 상대경로 지정
-LARK_PATH = "parser/grammar_skeleton.lark"
+LARK_PATH = "grammar.lark"
 
 # 반복되는 Prompt 지정
 PROMPT = "DB_2019-14473>"

@@ -257,8 +257,8 @@ class MyTransformer(Transformer):
     def insert_query(self, items):
         # INSERT 쿼리를 파싱하여 테이블명, 컬럼 리스트, 값 리스트를 반환
         # ### For debugging
-        # for i, item in enumerate(items):
-        #     print(f"ITEM{i}: {item}")
+        for i, item in enumerate(items):
+            print(f"ITEM{i}: {item}")
 
         # ITEM0: 'insert', ITEM1: 'into', ITEM2: 'nameage', ITEM3: col_names(None), ITEM4: 'values', ITEM5: value_list
 

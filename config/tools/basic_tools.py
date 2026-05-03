@@ -1,3 +1,4 @@
+# basic_tools.py
 import json
 
 # basic_tools는 테이블 목록, 스키마, 데이터 저장소와 관련된 공통 헬퍼를 제공한다.

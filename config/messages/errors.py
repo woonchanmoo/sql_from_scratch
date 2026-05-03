@@ -44,3 +44,38 @@ class TruncateReferencedTableError(Exception):
     def __init__(self, tableName):
         self.tableName = tableName
 
+# DB 1-3
+
+class InsertTypeMismatchError(Exception): pass
+
+class InsertColumnExistenceError(Exception):
+    def __init__(self, colName):
+        self.colName = colName
+
+class InsertColumnNonNullableError(Exception):
+    def __init__(self, colName):
+        self.colName = colName
+
+class SelectColumnResolveError(Exception):
+    def __init__(self, colName):
+        self.colName = colName
+
+class SelectColumnNotGrouped(Exception):
+    def __init__(self, colName):
+        self.colName = colName
+
+class TableNotSpecified(Exception):
+    def __init__(self, clauseName):
+        self.clauseName = clauseName
+
+class ColumnNotExist(Exception):
+    def __init__(self, clauseName):
+        self.clauseName = clauseName
+
+class AmbiguousReference(Exception):
+    def __init__(self, clauseName):
+        self.clauseName = clauseName
+
+class IncomparableError(Exception): pass
+
+class InvalidLimitOffsetError(Exception): pass
