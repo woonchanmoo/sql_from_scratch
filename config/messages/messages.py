@@ -123,6 +123,9 @@ def format_error(e: Exception):
     elif isinstance(e, InsertColumnNonNullableError):
         return f"Insert has failed: '{e.colName}' is not nullable"
 
+    elif isinstance(e, DeleteReferentialIntegrityPassed):
+        return f"'{e.count}' row(s) are not deleted due to referential integrity"
+
     elif isinstance(e, SelectColumnResolveError):
         return f"Select has failed: fail to resolve '{e.colName}'"
 

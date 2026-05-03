@@ -281,8 +281,190 @@ class MyTransformer(Transformer):
         print(f"{PROMPT} 'DELETE' requested")
 
         # ### For debugging
-        # for i, item in enumerate(items):
-        #     print(f"ITEM{i}: {item}")
+        for i, item in enumerate(items):
+            print(f"ITEM{i}: {item}")
+
+        table_name = items[2]
+        where_clause = items[3] if len(items) > 3 else None
+
+        return {
+            "type": "delete",
+            "delete_schema": {
+                "table_name": table_name,
+                "where_clause": where_clause
+            }
+        }
+
+    def comparable_value(self, items):
+        # INT | STR | DATE tokens
+        # Return with type marker so comp_operand can distinguish from column_name
+        token = items[0]
+        if token.type == 'STR':
+            return {
+                "_literal_type": "str",
+                "value": token.value.strip('"').strip("'")
+            }
+        elif token.type == 'INT':
+            return {
+                "_literal_type": "int",
+                "value": int(token.value)
+            }
+        elif token.type == 'DATE':
+            return {
+                "_literal_type": "date",
+                "value": token.value
+            }
+        else:
+            return {
+                "_literal_type": "unknown",
+                "value": token.value
+            }
+
+    def comp_operand(self, items):
+        # comp_operand can be comparable_value or [table_name "."] column_name
+        # Always return consistent dictionary format for easier downstream processing
+        if len(items) == 1:
+            item = items[0]
+            # Distinguish: comparable_value returns dict with "_literal_type"
+            if isinstance(item, dict) and "_literal_type" in item:
+                # It's a literal value (int, str, or date)
+                return {
+                    "type": "value",
+                    "value": item["value"]
+                }
+            else:
+                # It's a column_name (string, lowercase)
+                return {
+                    "type": "column",
+                    "table": None,
+                    "column": item
+                }
+        elif len(items) == 2:
+            # [table_name, column_name]
+            return {
+                "type": "column",
+                "table": items[0],
+                "column": items[1]
+            }
+        else:
+            # Shouldn't reach here
+            return {
+                "type": "unknown",
+                "value": items
+            }
+
+    def comp_op(self, items):
+        return str(items[0]).lower()
+
+    def _negate_operator(self, op):
+        """Negate comparison operator for NOT optimization"""
+        negations = {
+            '=': '!=',
+            '!=': '=',
+            '>': '<=',
+            '>=': '<',
+            '<': '>=',
+            '<=': '>'
+        }
+        return negations.get(op, op)
+
+    def comparison_predicate(self, items):
+        return {
+            "type": "comparison",
+            "operator": items[1],
+            "left": items[0],
+            "right": items[2]
+        }
+
+    def null_operation(self, items):
+        # IS [NOT] NULL
+        has_not = any(
+            isinstance(item, Token) and item.type == 'NOT'
+            for item in items
+        )
+        return {
+            "type": "null_check",
+            "not_null": has_not
+        }
+
+    def null_predicate(self, items):
+        # [table_name "."] column_name null_operation
+        if len(items) == 2:
+            column_ref = {
+                "type": "column",
+                "table": None,
+                "column": items[0]
+            }
+            null_op = items[1]
+        else:
+            column_ref = {
+                "type": "column",
+                "table": items[0],
+                "column": items[1]
+            }
+            null_op = items[2]
+        return {
+            "type": "null_predicate",
+            "column": column_ref,
+            "is_not_null": null_op.get("not_null", False)
+        }
+
+    def predicate(self, items):
+        return items[0]
+
+    def boolean_test(self, items):
+        return items[0]
+
+    def boolean_factor(self, items):
+        
+        # NOT이 없으면 (default) 그대로 predicate를 return
+        if not items[0]:
+            return items[1]
+        # NOT이 있으면 operand의 operator를 반전시켜 NOT을 제거
+        operand = items[-1]
+        if operand["type"] == "comparison":
+            return {
+                "type": "comparison",
+                "operator": self._negate_operator(operand["operator"]),
+                "left": operand["left"],
+                "right": operand["right"]
+            }
+        elif operand["type"] == "null_predicate":
+            return {
+                "type": "null_predicate",
+                "column": operand["column"],
+                "is_not_null": not operand["is_not_null"]
+            }
+        else:
+            # 다른 타입은 NOT으로 감싸기
+            return {
+                "type": "not",
+                "operand": operand
+            }
+
+    def boolean_term(self, items):
+        terms = [item for item in items if not isinstance(item, Token)]
+        if len(terms) == 1:
+            return terms[0]
+        return {
+            "type": "and",
+            "operands": terms
+        }
+
+    def boolean_expr(self, items):
+        terms = [item for item in items if not isinstance(item, Token)]
+        if len(terms) == 1:
+            return terms[0]
+        return {
+            "type": "or",
+            "operands": terms
+        }
+
+    def parenthesized_boolean_expr(self, items):
+        return items[1]
+
+    def where_clause(self, items):
+        return items[1] if len(items) > 1 else None
 
     def select_query(self, items):
         # SELECT 쿼리를 AST 형식으로 변환

@@ -76,6 +76,10 @@ class AmbiguousReference(Exception):
     def __init__(self, clauseName):
         self.clauseName = clauseName
 
+class DeleteReferentialIntegrityPassed(Exception):
+    def __init__(self, count):
+        self.count = count
+
 class IncomparableError(Exception): pass
 
 class InvalidLimitOffsetError(Exception): pass

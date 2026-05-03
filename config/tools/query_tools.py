@@ -316,3 +316,23 @@ def truncate_table(txn, table_name):
     
     except Exception as e:
         return ExecutionResult(error=e)
+    
+def delete_from_table(txn, delete_schema):
+    """Remove all rows from a table and reset its counter."""
+    
+    # try:
+        # # 1. validation
+        # validate_delete(txn, table_name)
+
+        # # 2. 데이터 행(Rows) 삭제
+        # delete_all_rows(txn, table_name)
+
+        # # 3. Counter 초기화
+        # reset_counter(txn, table_name)
+
+        # return ExecutionResult(
+        #     result=Result("TruncateSuccess", table_name)
+        # )
+    
+    # except Exception as e:
+    #     return ExecutionResult(error=e)

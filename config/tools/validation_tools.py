@@ -275,12 +275,6 @@ def validate_rename(txn, old_name, new_name):
     validate_rename_table(txn, new_name)
 
 ##################################################
-# Validate SELECT
-##################################################
-def validate_select(txn, table_name):
-    validate_select_table(txn, table_name)
-
-##################################################
 # Validate INSERT
 ##################################################
 def validate_insert(txn, table_name, input_columns, values, all_column_names, processed_values, columns_info):
@@ -342,3 +336,17 @@ def validate_insert_non_nullable(all_column_names, processed_values, columns_inf
     for i, col_name in enumerate(all_column_names):
         if columns_info[col_name]["not_null"] and processed_values[i] is None:
             raise InsertColumnNonNullableError(col_name)
+        
+##################################################
+# Validate DELETE
+##################################################
+def validate_delete(txn, table_name):
+    pass
+
+
+
+##################################################
+# Validate SELECT
+##################################################
+def validate_select(txn, table_name):
+    validate_select_table(txn, table_name)

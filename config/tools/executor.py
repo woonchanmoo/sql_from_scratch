@@ -42,6 +42,9 @@ class QueryExecutor:
             
             elif qtype == "truncate_table":
                 return truncate_table(txn, query["table_name"])
+            
+            elif qtype == "delete":
+                return delete_from_table(txn, query["delete_schema"])
 
             # else:
             #     raise Exception(f"Unknown query type: {qtype}")
