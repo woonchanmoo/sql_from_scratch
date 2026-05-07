@@ -38,3 +38,23 @@ schema = {
         }
     ]
 }
+
+delete_schema = {
+    "table_name": "nameage",
+    "where_clause": {
+        'type': 'and',
+        'operands': [
+            {
+                'type': 'comparison',
+                'operator': '!=',
+                'left': {'type': 'column', 'table': None, 'column': 'age'},
+                'right': {'type': 'value', 'value': 23}
+            },
+            {
+                'type': 'null_predicate',
+                'column': {'type': 'column', 'table': None, 'column': 'name'},
+                'is_not_null': False
+            }
+        ]
+    }
+}

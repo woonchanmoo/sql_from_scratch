@@ -340,8 +340,124 @@ def validate_insert_non_nullable(all_column_names, processed_values, columns_inf
 ##################################################
 # Validate DELETE
 ##################################################
-def validate_delete(txn, table_name):
-    pass
+def validate_delete(txn, table_name, where_clause=None):
+    """
+    DELETE FROM table [WHERE clause] 검증
+    
+    검증 항목:
+    1. 테이블 존재 확인 → NoSuchTable
+    2. WHERE 절이 있다면:
+       a. WHERE 절에서 참조하는 컬럼이 테이블에 존재하는지 확인
+       b. WHERE 절의 기본 문법 검사 (추후 확장 가능)
+    
+    구조:
+    - validate_table_exists(txn, table_name): 테이블 존재 확인
+    - validate_where_columns(txn, table_name, where_clause): WHERE절 컬럼 검증
+    """
+    
+    # 1. 테이블 존재 확인
+    validate_table_exists(txn, table_name, "Delete")
+    
+    # 2. WHERE 절 검증 (있으면)
+    if where_clause is not None:
+        validate_where_columns(txn, table_name, where_clause)
+
+
+def validate_where_columns(txn, table_name, where_clause):
+    """
+    WHERE clause에서 참조하는 컬럼들이 테이블에 존재하는지 확인합니다.
+
+    Raises:
+        TableNotSpecified : col_ref.table이 FROM절 테이블과 다를 때
+        ColumnNotExist    : 컬럼이 스키마에 없을 때
+        IncomparableError : 타입/연산자가 호환되지 않을 때
+    """
+    schema = get_schema(txn, table_name)
+    _validate_where_node(where_clause, table_name, schema)
+
+
+def _validate_where_node(node, table_name, schema):
+    """WHERE AST 노드를 재귀적으로 순회하며 검증한다."""
+    t = node["type"]
+    if t in ("and", "or"):
+        for operand in node["operands"]:
+            _validate_where_node(operand, table_name, schema)
+    elif t == "comparison":
+        # 컬럼 참조 검증
+        if node["left"]["type"] == "column":
+            _validate_column_ref(node["left"], table_name, schema)
+        if node["right"]["type"] == "column":
+            _validate_column_ref(node["right"], table_name, schema)
+        # 타입/연산자 호환성 검증
+        _validate_comparison_types(node, schema)
+    elif t == "null_predicate":
+        _validate_column_ref(node["column"], table_name, schema)
+
+
+def _validate_column_ref(col_ref, table_name, schema):
+    """컬럼 참조의 테이블 prefix 및 컬럼 존재 여부를 검증한다."""
+    # table prefix가 명시되었고 현재 테이블과 다르면 TableNotSpecified
+    if col_ref["table"] is not None and col_ref["table"] != table_name:
+        raise TableNotSpecified("where")
+    # 컬럼이 스키마에 없으면 ColumnNotExist
+    if col_ref["column"] not in schema["columns"]:
+        raise ColumnNotExist("where")
+
+
+def _validate_comparison_types(comparison, schema):
+    """
+    comparison 노드의 양쪽 operand 타입과 연산자의 호환성을 검증한다.
+
+    타입 규칙 (Table 1):
+        char        : = != 만 허용
+        int / date  : 모든 비교 연산자 허용
+        str_literal : char·date 컬럼 모두와 호환 (Python str 리터럴)
+        null 리터럴 : comparison에서는 항상 IncomparableError
+    """
+    left, right, op = comparison["left"], comparison["right"], comparison["operator"]
+
+    l_type = _get_operand_schema_type(left, schema)   # "int"|"date"|"char"|"str_literal"|None
+    r_type = _get_operand_schema_type(right, schema)
+
+    # null 리터럴이 comparison에 있으면 IS NULL 을 써야 하므로 IncomparableError
+    if l_type is None or r_type is None:
+        raise IncomparableError()
+
+    # 유효 타입 결정
+    if l_type == "str_literal" and r_type == "str_literal":
+        effective = "char"                  # 두 문자열 리터럴 → char 문맥
+    elif l_type == "str_literal":
+        if r_type == "int":                 # 문자열 리터럴 vs int 컬럼 → 불가
+            raise IncomparableError()
+        effective = r_type                  # char 또는 date 컬럼 타입 따라감
+    elif r_type == "str_literal":
+        if l_type == "int":
+            raise IncomparableError()
+        effective = l_type
+    else:
+        if l_type != r_type:               # int vs date 등 서로 다른 컬럼 타입
+            raise IncomparableError()
+        effective = l_type
+
+    # char 타입에서 대소 비교 연산자 사용 금지
+    if effective == "char" and op not in ("=", "!="):
+        raise IncomparableError()
+
+
+def _get_operand_schema_type(operand, schema):
+    """operand의 정적 타입을 반환한다. ("int"|"date"|"char"|"str_literal"|None)"""
+    if operand["type"] == "column":
+        col_type = schema["columns"][operand["column"]]["type"]
+        if isinstance(col_type, dict):      # {"base": "char", "length": N}
+            return "char"
+        return col_type                     # "int" 또는 "date"
+    elif operand["type"] == "value":
+        val = operand["value"]
+        if isinstance(val, int):
+            return "int"
+        elif isinstance(val, str):
+            return "str_literal"            # char·date 모두와 호환
+        return None                         # null
 
 
 

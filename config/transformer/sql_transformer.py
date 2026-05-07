@@ -257,8 +257,6 @@ class MyTransformer(Transformer):
     def insert_query(self, items):
         # INSERT 쿼리를 파싱하여 테이블명, 컬럼 리스트, 값 리스트를 반환
         # ### For debugging
-        for i, item in enumerate(items):
-            print(f"ITEM{i}: {item}")
 
         # ITEM0: 'insert', ITEM1: 'into', ITEM2: 'nameage', ITEM3: col_names(None), ITEM4: 'values', ITEM5: value_list
 
@@ -280,19 +278,19 @@ class MyTransformer(Transformer):
     def delete_query(self, items):
         print(f"{PROMPT} 'DELETE' requested")
 
-        # ### For debugging
-        for i, item in enumerate(items):
-            print(f"ITEM{i}: {item}")
+        # # ### For debugging
+        # for i, item in enumerate(items):
+        #     print(f"ITEM{i}: {item}")
 
         table_name = items[2]
         where_clause = items[3] if len(items) > 3 else None
 
         return {
-            "type": "delete",
-            "delete_schema": {
-                "table_name": table_name,
-                "where_clause": where_clause
-            }
+                "type": "delete",
+                "delete_schema": {
+                    "table_name": table_name,
+                    "where_clause": where_clause
+                }
         }
 
     def comparable_value(self, items):

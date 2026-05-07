@@ -167,3 +167,44 @@ def delete_all_rows(txn, table_name: str):
     for key, _ in cursor:
         if key.startswith(prefix):
             txn.delete(key)
+
+# 4.5. Get all record IDs (for DELETE/SELECT with WHERE)
+def get_all_record_ids(txn, table_name: str):
+    """
+    테이블의 모든 record_id를 수집합니다.
+    DELETE/SELECT WHERE에서 조건을 평가할 레코드들을 찾기 위해 사용합니다.
+    
+    Returns: list of int (record_id들)
+    """
+    prefix = f"data:{table_name}:".encode()
+    cursor = txn.cursor()
+    record_ids = []
+    
+    for key, _ in cursor:
+        if key.startswith(prefix):
+            # key: b"data:table_name:id" -> id 추출
+            record_id = int(key.decode().split(":")[-1])
+            record_ids.append(record_id)
+    
+    return sorted(record_ids)
+
+# 4.6. Get single row by ID (for WHERE clause evaluation)
+def get_row(txn, table_name: str, record_id: int):
+    """
+    특정 레코드 하나를 ID로 조회합니다.
+    
+    Returns: list (컬럼 값 리스트) 또는 None
+    """
+    data_key = f"data:{table_name}:{record_id}".encode()
+    data_bytes = txn.get(data_key)
+    if data_bytes is None:
+        return None
+    return json.loads(data_bytes.decode())
+
+# 4.7. Delete single row by ID
+def delete_row(txn, table_name: str, record_id: int):
+    """
+    특정 레코드를 ID로 삭제합니다.
+    """
+    data_key = f"data:{table_name}:{record_id}".encode()
+    txn.delete(data_key)

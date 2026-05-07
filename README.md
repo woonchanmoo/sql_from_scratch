@@ -138,10 +138,111 @@ FOREIGN : "foreign"i
     "type": "insert",
     "insert_schema": {
         "table_name": "student",
-        "column_names": ["student_id", "student_name"]
+        "column_names": ["student_id", "student_name"],
         "values": [1, "Alice"]
     }
 }
+
+---
+
+### 7. WHERE 절 및 Boolean 표현식 변환
+
+`config/transformer/sql_transformer.py`는 WHERE 절을 아래와 같은 구조로 변환합니다.
+
+- `comparison`: `comp_operand comp_op comp_operand`
+- `null_predicate`: `column IS NULL` / `column IS NOT NULL`
+- `boolean_factor`: `NOT` 적용
+- `boolean_term`: `AND` 연결
+- `boolean_expr`: `OR` 연결
+
+예시:
+```python
+# SQL: DELETE FROM nameage WHERE age >= 23 AND name IS NOT NULL;
+# MyTransformer 결과:
+{
+    "type": "delete",
+    "delete_schema": {
+        "table_name": "nameage",
+        "where_clause": {
+            "type": "and",
+            "operands": [
+                {
+                    "type": "comparison",
+                    "operator": ">=",
+                    "left": {"type": "column", "table": None, "column": "age"},
+                    "right": {"type": "value", "value": 23}
+                },
+                {
+                    "type": "null_predicate",
+                    "column": {"type": "column", "table": None, "column": "name"},
+                    "is_not_null": True
+                }
+            ]
+        }
+    }
+}
+```
+
+현재 구현은 `NOT`이 `boolean_factor`를 통해 들어올 때 비교 연산자 또는 NULL 검사를 반전시켜서 AST에서 `not` 노드를 최대한 제거합니다.
+
+최종 `boolean_factor` 구현:
+```python
+def boolean_factor(self, items):
+    # NOT이 없으면 (default) 그대로 predicate를 return
+    if not items[0]:
+        return items[1]
+    # NOT이 있으면 operand의 operator를 반전시켜 NOT을 제거
+    operand = items[-1]
+    if operand["type"] == "comparison":
+        return {
+            "type": "comparison",
+            "operator": self._negate_operator(operand["operator"]),
+            "left": operand["left"],
+            "right": operand["right"]
+        }
+    elif operand["type"] == "null_predicate":
+        return {
+            "type": "null_predicate",
+            "column": operand["column"],
+            "is_not_null": not operand["is_not_null"]
+        }
+    else:
+        # 다른 타입은 NOT으로 감싸기
+        return {
+            "type": "not",
+            "operand": operand
+        }
+```
+
+예시:
+```python
+# SQL: DELETE FROM nameage WHERE age != 23 AND name IS NULL;
+# MyTransformer 결과:
+{
+    "type": "delete",
+    "delete_schema": {
+        "table_name": "nameage",
+        "where_clause": {
+            "type": "and",
+            "operands": [
+                {
+                    "type": "comparison",
+                    "operator": "!=",
+                    "left": {"type": "column", "table": None, "column": "age"},
+                    "right": {"type": "value", "value": 23}
+                },
+                {
+                    "type": "null_predicate",
+                    "column": {"type": "column", "table": None, "column": "name"},
+                    "is_not_null": False
+                }
+            ]
+        }
+    }
+}
+```
+
+**주의**: `AND`는 `boolean_term`에서 `type: "and"`로, `OR`는 `boolean_expr`에서 `type: "or"`로 변환됩니다.
 ```
 
 ---
