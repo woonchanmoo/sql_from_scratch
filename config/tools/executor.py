@@ -34,9 +34,6 @@ class QueryExecutor:
             elif qtype == "insert":
                 return insert_into_table(txn, query["insert_schema"])
             
-            elif qtype == "select":
-                return select_table(txn, query["select_schema"])
-            
             elif qtype == "rename":
                 return rename_table(txn, query["rename_schema"])
             
@@ -46,6 +43,8 @@ class QueryExecutor:
             elif qtype == "delete":
                 return delete_from_table(txn, query["delete_schema"])
 
+            elif qtype == "select":
+                return select_table(txn, query["select_schema"])
             # else:
             #     raise Exception(f"Unknown query type: {qtype}")
 

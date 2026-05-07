@@ -39,6 +39,31 @@ schema = {
     ]
 }
 
+select_schema = {
+    "select_list": [
+        {"type": "column",    "table": "s",       "column": "name",  "alias": "sname"},
+        {"type": "aggregate", "func":  "min",      "table": "e",      "column": "score", "alias": "avg_score"}
+    ],
+    "from_list":   ["student"],                        # 실제 테이블 이름 (alias 아님)
+    "join_list": [
+        {
+            "_clause": "join",
+            "table":   "enroll",
+            "left":    {"table": "s",      "column": "id"},
+            "right":   {"table": "enroll", "column": "sid"}
+        }
+    ],
+    "where_clause": {
+        "type": "comparison", "operator": ">",
+        "left":  {"type": "column", "table": "s", "column": "age"},
+        "right": {"type": "value",  "value": 18}
+    },
+    "group_by":  {"_clause": "group_by",  "table": None, "column": "dept"},
+    "order_by":  {"_clause": "order_by",  "table": None, "column": "avg_score", "direction": "asc"},
+    "limit":  5,
+    "offset": 0
+}
+
 delete_schema = {
     "table_name": "nameage",
     "where_clause": {

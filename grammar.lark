@@ -54,6 +54,14 @@ EQUAL: "="
 NOTEQUAL: "!="
 LIMIT: "limit"i
 OFFSET: "offset"i
+JOIN : "join"i
+ON : "on"i
+ORDER : "order"i
+BY : "by"i
+GROUP : "group"i
+ASC : "asc"i
+AGG_FUNC : "max"i | "min"i | "sum"i | "avg"i
+// DESC는 이미 선언됨 — earley 동적 렉서가 문맥으로 구별
 
 // Tokens
 STR : DQ _STRING_ESC_INNER DQ | SQ _STRING_ESC_INNER SQ
@@ -114,13 +122,25 @@ delete_query : DELETE FROM table_name [where_clause]
 
 // SELECT
 select_query : SELECT select_list table_expression
+
+// SELECT 컬럼 목록: * 또는 col,... (aggregate 포함)
 select_list : "*"
             | selected_column ("," selected_column)*
-selected_column : [table_name "."] column_name [AS column_name]
-table_expression : from_clause [where_clause] [limit_clause] [offset_clause]
+selected_column : aggregate_func [AS column_name]
+               | [table_name "."] column_name [AS column_name]
+aggregate_func : AGG_FUNC LP [table_name "."] column_name RP
+
+// FROM + 선택적 절들 (join 0~N, where, group by, order by, limit, offset)
+table_expression : from_clause join_clause* [where_clause] [group_by_clause] [order_by_clause] [limit_clause] [offset_clause]
 from_clause : FROM table_reference_list
 table_reference_list : referred_table ("," referred_table)*
 referred_table : table_name [AS table_name]
+
+// JOIN (INNER 생략, ON은 table.col = table.col 형태)
+join_clause : JOIN table_name ON join_condition
+join_condition : [table_name "."] column_name EQUAL [table_name "."] column_name
+
+// WHERE
 where_clause : WHERE boolean_expr
 boolean_expr : boolean_term (OR boolean_term)*
 boolean_term : boolean_factor (AND boolean_factor)*
@@ -137,6 +157,15 @@ comp_operand : comparable_value
 comparable_value : INT | STR | DATE
 null_predicate : [table_name "."] column_name null_operation
 null_operation : IS [NOT] NULL
+
+// GROUP BY (단일 컬럼)
+group_by_clause : GROUP BY [table_name "."] column_name
+
+// ORDER BY (ASC/DESC 선택, 기본값 ASC)
+order_by_clause : ORDER BY [table_name "."] column_name [order_direction]
+order_direction : ASC | DESC
+
+// LIMIT / OFFSET
 limit_clause : LIMIT INT
 offset_clause : OFFSET INT
 

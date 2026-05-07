@@ -1,6 +1,7 @@
 from config.tools.validation_tools import *
 from config.tools.basic_tools import *
 from config.messages.messages import *
+from config.messages.errors import *
 
 # query_tools는 실제 쿼리 수행 로직을 담고 있다.
 # 각 함수는 validation을 먼저 수행한 뒤 트랜잭션에서 메타/데이터 조작을 수행한다.
@@ -158,6 +159,10 @@ def insert_into_table(txn, insert_schema):
         input_columns = insert_schema.get("column_names") 
         values = insert_schema.get("values", [])
 
+        tables = get_tables(txn)
+        if not table_name in tables:
+            raise NoSuchTable("Insert into")
+
         # 1. 테이블 스키마 가져오기
         schema = get_schema(txn, table_name)
         all_column_names = schema.get("column_names", [])
@@ -202,62 +207,6 @@ def insert_into_table(txn, insert_schema):
         )
 
     except Exception as e:
-        return ExecutionResult(error=e)
-    
-def select_table(txn, select_schema):
-    """Validate and display rows for a SELECT query from one or more tables."""
-    try:
-        table_names = select_schema["from_list"]
-
-        # 1. Validation
-        for table_name in table_names:
-            validate_select(txn, table_name)
-        
-        target_table = table_names[0]
-        schema = get_schema(txn, target_table)
-        
-        # 2. 컬럼 헤더 준비
-        all_columns = schema.get("column_names", [])
-        col_width = 20  # 각 컬럼의 고정 너비 설정
-        
-        # 3. 데이터 로드
-        rows = get_rows(txn, target_table)
-        count = len(rows)
-        
-        # 4. 출력 포맷팅
-        # 구분선 생성 (컬럼 개수만큼 '-' 반복)
-        line_length = (col_width + 3) * len(all_columns)
-        print("-" * line_length)
-        
-        if count > 0:
-            # 헤더 출력 (대문자 정렬)
-            header_str = " | ".join([f"{col.upper():<{col_width}}" for col in all_columns])
-            print(header_str)
-            
-            # 데이터 행 출력
-            for row in rows:
-                # 각 컬럼 값을 문자열로 변환하되, None이면 'null' 출력 + 정렬 처리
-                row_items = []
-                for val in row:
-                    display_val = str(val) if val is not None else "null"
-                    row_items.append(f"{display_val:<{col_width}}")
-                
-                print(" | ".join(row_items))
-        
-        print("-" * line_length)
-        
-        # 5. Row 개수 출력
-        if count == 1:
-            print(f"{count} row in set")
-        else:
-            print(f"{count} rows in set")
-
-        return ExecutionResult(
-            result=Result("SelectSuccess", None)
-        )
-
-    except Exception as e:
-        # validate_select 등에서 발생한 에러 처리 (SelectTableExistenceError 포함)
         return ExecutionResult(error=e)
     
 def rename_table(txn, rename_schema):
@@ -316,7 +265,11 @@ def truncate_table(txn, table_name):
     
     except Exception as e:
         return ExecutionResult(error=e)
-    
+
+# ──────────────────────────────────────────────
+# DELETE 함수
+# ──────────────────────────────────────────────
+
 def delete_from_table(txn, delete_schema):
     """
     DELETE FROM table [WHERE clause] 실행
@@ -369,7 +322,6 @@ def delete_from_table(txn, delete_schema):
 
     except Exception as e:
         return ExecutionResult(error=e)
-
 
 # ──────────────────────────────────────────────
 # DELETE 내부 헬퍼 함수
@@ -616,3 +568,336 @@ def _check_referential_integrity(txn, table_name, record_ids, schema):
                 if fk_tuple in target_value_sets:
                     # FK 위반: 삭제 요청된 전체 레코드 수를 count로 전달
                     raise DeleteReferentialIntegrityPassed(len(record_ids))
+
+# ──────────────────────────────────────────────
+# SELECT 함수
+# ──────────────────────────────────────────────
+
+def select_table(txn, select_schema):
+    """
+    SELECT 쿼리를 실행한다.
+
+    select_schema 구조 (schema.py 참조):
+        {
+            "select_list" : [{"type":"star"} | {"type":"column","table":str|None,"column":str,"alias":str|None}
+                              | {"type":"aggregate","func":str,"table":str|None,"column":str,"alias":str|None}],
+            "from_list"   : [str, ...],          # 실제 테이블 이름 (alias 아님)
+            "join_list"   : [{"_clause":"join","table":str,
+                               "left":{"table":str|None,"column":str},
+                               "right":{"table":str|None,"column":str}}, ...],
+            "where_clause": dict | None,         # WHERE AST (DELETE와 동일 구조)
+            "group_by"    : {"_clause":"group_by","table":str|None,"column":str} | None,
+            "order_by"    : {"_clause":"order_by","table":str|None,"column":str,"direction":"asc"|"desc"} | None,
+            "limit"       : int | None,
+            "offset"      : int | None
+        }
+
+    처리 순서:
+    1. FROM 테이블 스키마 로드
+    2. 전체 Validation (validate_select_query)
+    3. FROM + JOIN → 결합 행 생성  (row = {(table_name, col_name): value})
+    4. WHERE 필터
+    5a. GROUP BY → 그룹화 + 집계 투영
+    5b. GROUP BY 없음 → 단순 컬럼 투영
+    6. ORDER BY 정렬
+    7. LIMIT / OFFSET 슬라이싱
+    8. 결과 출력
+
+    Note:
+        from_list는 실제 테이블 이름만 담고 있어 alias(s, e 등)를 직접 해석할 수 없다.
+        alias 지원이 필요하면 sql_transformer.py의 referred_table을 수정하여
+        from_list를 [{"table": str, "alias": str}] 구조로 바꿔야 한다.
+    """
+    try:
+        from_list    = select_schema["from_list"]
+        join_list    = select_schema.get("join_list", [])
+        where_clause = select_schema.get("where_clause")
+        group_by     = select_schema.get("group_by")
+        order_by     = select_schema.get("order_by")
+        select_list  = select_schema["select_list"]
+        limit        = select_schema.get("limit")
+        offset       = select_schema.get("offset")
+
+        # 1. FROM + JOIN 테이블 스키마 로드 (존재 확인 포함)
+        all_table_names = list(from_list)
+        for j in join_list:
+            if j["table"] not in all_table_names:
+                all_table_names.append(j["table"])
+        schemas = _load_table_schemas(txn, all_table_names)
+
+        # 2. 전체 Validation
+        validate_select_query(txn, select_schema, schemas)
+
+        # 3. FROM + JOIN → 결합 행 빌드
+        #    row_dict = {(table_name, col_name): value, ...}
+        rows = _build_joined_rows(txn, from_list, join_list, schemas)
+
+        # 4. WHERE 필터
+        if where_clause:
+            rows = _filter_rows_where(rows, where_clause, schemas, from_list)
+
+        # 5. GROUP BY 또는 단순 투영
+        if group_by:
+            rows, headers = _apply_group_by(rows, group_by, select_list, schemas)
+        else:
+            rows, headers = _project_columns(rows, select_list, schemas, from_list)
+
+        # 6. ORDER BY
+        if order_by:
+            rows = _apply_order_by(rows, headers, order_by)
+
+        # 7. LIMIT / OFFSET
+        rows = _apply_limit_offset(rows, limit, offset)
+
+        # 8. 출력
+        _print_result(rows, headers)
+
+        return ExecutionResult(result=Result("SelectSuccess", None))
+
+    except Exception as e:
+        return ExecutionResult(error=e)
+
+
+# ──────────────────────────────────────────────
+# SELECT 내부 헬퍼 함수
+# ──────────────────────────────────────────────
+
+def _load_table_schemas(txn, table_names):
+    """FROM/JOIN 절의 모든 테이블 스키마를 로드한다."""
+    schemas = {}
+    for name in table_names:
+        schema = get_schema(txn, name)
+        if schema is None:
+            raise SelectTableExistenceError(name)
+        schemas[name] = schema
+    return schemas
+
+
+def _build_joined_rows(txn, from_list, join_list, schemas):
+    """FROM + INNER JOIN으로 결합된 행 목록을 반환한다.
+    row = {(table_name, col_name): value}
+    """
+    # Cartesian product of all FROM tables
+    rows = [{}]
+    for table in from_list:
+        col_names = schemas[table]["column_names"]
+        table_rows = get_rows(txn, table)
+        new_rows = []
+        for existing in rows:
+            for vals in table_rows:
+                merged = dict(existing)
+                for col, val in zip(col_names, vals):
+                    merged[(table, col)] = val
+                new_rows.append(merged)
+        rows = new_rows
+
+    # INNER JOIN
+    for jc in join_list:
+        join_table = jc["table"]
+        left_ref   = jc["left"]   # {"table": str|None, "column": str}
+        right_ref  = jc["right"]
+
+        col_names  = schemas[join_table]["column_names"]
+        join_rows  = [
+            {(join_table, c): v for c, v in zip(col_names, vals)}
+            for vals in get_rows(txn, join_table)
+        ]
+
+        new_rows = []
+        for existing in rows:
+            lv = _resolve_value_in_row(existing, left_ref)
+            for jr in join_rows:
+                rv = _resolve_value_in_row(jr, right_ref)
+                if lv is not None and lv == rv:
+                    new_rows.append({**existing, **jr})
+        rows = new_rows
+
+    return rows
+
+
+def _resolve_value_in_row(row, col_ref):
+    """row = {(table,col): value} 에서 col_ref 값을 꺼낸다."""
+    table = col_ref.get("table")
+    col   = col_ref["column"]
+    if table:
+        return row.get((table, col))
+    matches = [v for (_, c), v in row.items() if c == col]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _filter_rows_where(rows, where_clause, schemas, from_list):
+    """WHERE 조건을 만족하는 행만 반환한다."""
+    return [row for row in rows if _evaluate_where_select(row, where_clause)]
+
+
+def _evaluate_where_select(row, node):
+    """WHERE AST를 재귀 평가한다. row = {(table,col): value}"""
+    t = node["type"]
+    if t == "and":
+        return all(_evaluate_where_select(row, op) for op in node["operands"])
+    if t == "or":
+        return any(_evaluate_where_select(row, op) for op in node["operands"])
+    if t == "comparison":
+        lv = _resolve_value_in_row(row, node["left"])  if node["left"]["type"]  == "column" else node["left"]["value"]
+        rv = _resolve_value_in_row(row, node["right"]) if node["right"]["type"] == "column" else node["right"]["value"]
+        op = node["operator"]
+        if lv is None or rv is None:
+            return False
+        if type(lv) != type(rv):
+            return False
+        if op == "=":  return lv == rv
+        if op == "!=": return lv != rv
+        if op == "<":  return lv <  rv
+        if op == ">":  return lv >  rv
+        if op == "<=": return lv <= rv
+        if op == ">=": return lv >= rv
+    if t == "null_predicate":
+        val = _resolve_value_in_row(row, node["column"])
+        return (val is not None) if node["is_not_null"] else (val is None)
+    return False
+
+
+def _project_columns(rows, select_list, schemas, from_list):
+    """GROUP BY 없이 SELECT 컬럼 목록에 따라 행을 투영한다."""
+    # ── STAR: all columns from all FROM tables in schema order
+    if len(select_list) == 1 and select_list[0]["type"] == "star":
+        keys    = [(t, c) for t in from_list for c in schemas[t]["column_names"]]
+        headers = [c for _, c in keys]
+        return [[row.get(k) for k in keys] for row in rows], headers
+
+    # ── Specific columns (and/or global aggregates)
+    headers = []
+    for item in select_list:
+        if item["type"] == "column":
+            headers.append(item.get("alias") or item["column"])
+        elif item["type"] == "aggregate":
+            headers.append(item.get("alias") or f"{item['func']}({item['column']})")
+
+    has_agg = any(item["type"] == "aggregate" for item in select_list)
+
+    if has_agg:
+        # Pre-compute each aggregate over all rows
+        agg_vals = {}
+        for i, item in enumerate(select_list):
+            if item["type"] == "aggregate":
+                values = [_resolve_value_in_row(row, {"table": item.get("table"), "column": item["column"]})
+                          for row in rows]
+                agg_vals[i] = _compute_aggregate(values, item["func"])
+        # Single output row; use first row for plain columns (or None if empty)
+        rep = rows[0] if rows else {}
+        single = []
+        for i, item in enumerate(select_list):
+            if item["type"] == "aggregate":
+                single.append(agg_vals[i])
+            else:
+                single.append(_resolve_value_in_row(rep, {"table": item.get("table"), "column": item["column"]}))
+        return [single], headers
+
+    # Plain columns only — project each row
+    projected = []
+    for row in rows:
+        projected.append([
+            _resolve_value_in_row(row, {"table": item.get("table"), "column": item["column"]})
+            for item in select_list
+        ])
+    return projected, headers
+
+
+def _apply_group_by(rows, group_by, select_list, schemas):
+    """GROUP BY 기준으로 행을 묶고 집계 함수를 적용한다."""
+    gb_ref = {"table": group_by.get("table"), "column": group_by["column"]}
+
+    # 그룹화
+    groups: dict = {}
+    for row in rows:
+        key = _resolve_value_in_row(row, gb_ref)
+        groups.setdefault(key, []).append(row)
+
+    # 헤더 결정
+    headers = []
+    for item in select_list:
+        if item["type"] == "column":
+            headers.append(item.get("alias") or item["column"])
+        elif item["type"] == "aggregate":
+            headers.append(item.get("alias") or f"{item['func']}({item['column']})")
+
+    # 각 그룹 → 결과 행
+    result_rows = []
+    for group_rows in groups.values():
+        proj = []
+        for item in select_list:
+            if item["type"] == "column":
+                proj.append(_resolve_value_in_row(
+                    group_rows[0],
+                    {"table": item.get("table"), "column": item["column"]}
+                ))
+            elif item["type"] == "aggregate":
+                values = [
+                    _resolve_value_in_row(r, {"table": item.get("table"), "column": item["column"]})
+                    for r in group_rows
+                ]
+                proj.append(_compute_aggregate(values, item["func"]))
+        result_rows.append(proj)
+
+    return result_rows, headers
+
+
+def _compute_aggregate(values, func):
+    """집계 함수(max/min/sum/avg)를 None 제외 값들에 적용한다."""
+    non_null = [v for v in values if v is not None]
+    if func == "max":
+        return max(non_null) if non_null else None
+    if func == "min":
+        return min(non_null) if non_null else None
+    if func == "sum":
+        int_vals = [v for v in non_null if isinstance(v, int)]
+        return sum(int_vals)          # 비어 있거나 비-int면 0
+    if func == "avg":
+        num_vals = [v for v in non_null if isinstance(v, (int, float))]
+        return sum(num_vals) / len(num_vals) if num_vals else None
+    return None
+
+
+def _apply_order_by(rows, headers, order_by):
+    """ORDER BY 절에 따라 rows를 정렬한다."""
+    col_name  = order_by["column"]
+    direction = order_by["direction"]   # "asc" | "desc"
+
+    # headers에서 정렬 기준 인덱스 찾기 (alias / 컬럼명 모두 지원)
+    try:
+        idx = headers.index(col_name)
+    except ValueError:
+        return rows                     # 컬럼 없으면 정렬 생략 (validation에서 보장)
+
+    reverse = direction == "desc"
+
+    def sort_key(row):
+        val = row[idx]
+        # None을 가장 작은 값으로 취급: (0, ...) < (1, real_val)
+        return (0, ) if val is None else (1, val)
+
+    return sorted(rows, key=sort_key, reverse=reverse)
+
+
+def _apply_limit_offset(rows, limit, offset):
+    """LIMIT / OFFSET 절을 적용한다."""
+    start = offset if offset is not None else 0
+    if limit is not None:
+        return rows[start: start + limit]
+    return rows[start:]
+
+
+def _print_result(rows, headers):
+    """쿼리 결과를 테이블 형식으로 출력한다."""
+    col_w = 15
+    sep   = "-" * ((col_w + 3) * len(headers) - 1)
+
+    print(sep)
+    if headers:
+        print(" | ".join(f"{h.upper():<{col_w}}" for h in headers))
+        print(sep)
+    for row in rows:
+        print(" | ".join(f"{'null' if v is None else str(v):<{col_w}}" for v in row))
+    print(sep)
+    n = len(rows)
+    print(f"{n} row{'s' if n != 1 else ''} in set")

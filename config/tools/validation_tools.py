@@ -466,3 +466,249 @@ def _get_operand_schema_type(operand, schema):
 ##################################################
 def validate_select(txn, table_name):
     validate_select_table(txn, table_name)
+
+
+def validate_select_query(txn, select_schema, schemas):
+    """
+    SELECT 쿼리의 전체 절을 순서대로 검증한다.
+
+    검증 순서:
+    1. FROM 테이블 존재 확인   → SelectTableExistenceError(table_name)
+    2. JOIN ON 컬럼 검증       → ColumnNotExist("join"), IncomparableError
+    3. WHERE 절 검증           → TableNotSpecified("where"), ColumnNotExist("where"),
+                                  AmbiguousReference("where"), IncomparableError
+    4. GROUP BY 절 검증        → TableNotSpecified("group by"), ColumnNotExist("group by"),
+                                  AmbiguousReference("group by")
+    5. ORDER BY 절 검증        → ColumnNotExist("order by"), AmbiguousReference("order by")
+    6. LIMIT / OFFSET 값 검증  → InvalidLimitOffsetError
+    7. SELECT 컬럼 목록 검증   → SelectColumnResolveError(col_name),
+                                  SelectColumnNotGrouped(col_name)
+
+    Args:
+        txn          : LMDB transaction
+        select_schema: SELECT AST dict (sql_transformer 출력)
+        schemas      : {table_name: schema_dict}  (_load_table_schemas 결과)
+    """
+    from_list    = select_schema["from_list"]
+    join_list    = select_schema.get("join_list", [])
+    where_clause = select_schema.get("where_clause")
+    group_by     = select_schema.get("group_by")
+    order_by     = select_schema.get("order_by")
+    select_list  = select_schema["select_list"]
+    limit        = select_schema.get("limit")
+    offset       = select_schema.get("offset")
+
+    # FROM + JOIN 테이블 전체 목록 (WHERE/GROUP BY/ORDER BY/SELECT 검증에 사용)
+    all_tables = list(from_list)
+    for j in join_list:
+        if j["table"] not in all_tables:
+            all_tables.append(j["table"])
+
+    # 1. FROM 테이블 존재 확인
+    _validate_select_table_existence(txn, from_list)
+
+    # 2. JOIN ON 컬럼 검증
+    if join_list:
+        _validate_join_columns(join_list, schemas, from_list)
+
+    # 3. WHERE 절 검증
+    if where_clause:
+        _validate_where_select(where_clause, schemas, all_tables)
+
+    # 4. GROUP BY 절 검증
+    if group_by:
+        _validate_group_by_column(group_by, schemas, all_tables)
+
+    # 5. ORDER BY 절 검증
+    if order_by:
+        _validate_order_by_column(order_by, schemas, all_tables, select_list)
+
+    # 6. LIMIT / OFFSET 값 검증
+    _validate_limit_offset_values(limit, offset)
+
+    # 7. SELECT 컬럼 목록 검증
+    _validate_select_columns(select_list, group_by, schemas, all_tables)
+
+
+# ──────────────────────────────────────────────
+# SELECT 검증 내부 헬퍼
+# ──────────────────────────────────────────────
+
+def _validate_select_table_existence(txn, from_list):
+    """FROM 테이블 존재 확인 (_load_table_schemas 이전에 실행)."""
+    tables = get_tables(txn)
+    for name in from_list:
+        if name not in tables:
+            raise SelectTableExistenceError(name)
+
+
+def _resolve_column_in_schemas(col_ref, schemas, from_list, clause_name):
+    """col_ref를 (table_name, col_name) 으로 해석한다."""
+    table_ref = col_ref.get("table")
+    col_name  = col_ref["column"]
+
+    if table_ref is not None:
+        if table_ref not in from_list:
+            raise TableNotSpecified(clause_name)
+        if col_name not in schemas.get(table_ref, {}).get("columns", {}):
+            raise ColumnNotExist(clause_name)
+        return (table_ref, col_name)
+
+    # table prefix 없음 → 모든 from_list 테이블에서 탐색
+    matching = [t for t in from_list if col_name in schemas.get(t, {}).get("columns", {})]
+    if len(matching) == 0:
+        raise ColumnNotExist(clause_name)
+    if len(matching) > 1:
+        raise AmbiguousReference(clause_name)
+    return (matching[0], col_name)
+
+
+def _get_operand_type_multi(operand, schemas, from_list):
+    """operand의 정적 타입을 반환한다 ("int"|"date"|"char"|"str_literal"|None)."""
+    if operand["type"] == "value":
+        val = operand["value"]
+        if isinstance(val, int):   return "int"
+        if isinstance(val, str):   return "str_literal"
+        return None                # null literal
+    # column
+    try:
+        table_name, col_name = _resolve_column_in_schemas(operand, schemas, from_list, "where")
+        col_type = schemas[table_name]["columns"][col_name]["type"]
+        return "char" if isinstance(col_type, dict) else col_type
+    except Exception:
+        return None
+
+
+def _validate_comparison_types_multi(comparison, schemas, from_list):
+    """multi-table 컨텍스트에서 comparison 타입·연산자 호환성을 검증한다."""
+    left, right, op = comparison["left"], comparison["right"], comparison["operator"]
+    l_type = _get_operand_type_multi(left,  schemas, from_list)
+    r_type = _get_operand_type_multi(right, schemas, from_list)
+
+    if l_type is None or r_type is None:
+        raise IncomparableError()
+
+    if l_type == "str_literal" and r_type == "str_literal":
+        effective = "char"
+    elif l_type == "str_literal":
+        if r_type == "int": raise IncomparableError()
+        effective = r_type
+    elif r_type == "str_literal":
+        if l_type == "int": raise IncomparableError()
+        effective = l_type
+    else:
+        if l_type != r_type: raise IncomparableError()
+        effective = l_type
+
+    if effective == "char" and op not in ("=", "!="):
+        raise IncomparableError()
+
+
+def _validate_where_node_select(node, schemas, from_list):
+    """WHERE AST 노드를 재귀 검증한다 (다중 테이블)."""
+    t = node["type"]
+    if t in ("and", "or"):
+        for op in node["operands"]:
+            _validate_where_node_select(op, schemas, from_list)
+    elif t == "comparison":
+        if node["left"]["type"]  == "column":
+            _resolve_column_in_schemas(node["left"],  schemas, from_list, "where")
+        if node["right"]["type"] == "column":
+            _resolve_column_in_schemas(node["right"], schemas, from_list, "where")
+        _validate_comparison_types_multi(node, schemas, from_list)
+    elif t == "null_predicate":
+        _resolve_column_in_schemas(node["column"], schemas, from_list, "where")
+
+
+def _validate_where_select(where_clause, schemas, from_list):
+    """SELECT WHERE 절 검증 (다중 테이블)."""
+    _validate_where_node_select(where_clause, schemas, from_list)
+
+
+def _validate_join_columns(join_list, schemas, from_list):
+    """JOIN ON 컬럼 존재 및 타입 호환성 검증."""
+    available = list(from_list)
+    for jc in join_list:
+        join_table = jc["table"]
+        # JOIN 테이블도 available에 추가 (누적 JOIN 지원)
+        if join_table not in available:
+            available.append(join_table)
+
+        try:
+            lt, lc = _resolve_column_in_schemas(jc["left"],  schemas, available, "join")
+            rt, rc = _resolve_column_in_schemas(jc["right"], schemas, available, "join")
+        except ColumnNotExist:
+            raise ColumnNotExist("join")
+
+        l_type = schemas[lt]["columns"][lc]["type"]
+        r_type = schemas[rt]["columns"][rc]["type"]
+        if not is_same_type(l_type, r_type):
+            raise IncomparableError()
+
+
+def _validate_group_by_column(group_by, schemas, from_list):
+    """GROUP BY 컬럼 존재 및 모호성 검증."""
+    col_ref = {"table": group_by.get("table"), "column": group_by["column"]}
+    _resolve_column_in_schemas(col_ref, schemas, from_list, "group by")
+
+
+def _validate_order_by_column(order_by, schemas, from_list, select_list):
+    """ORDER BY 컬럼 검증 (alias 우선, 없으면 실제 컬럼 탐색)."""
+    col_name = order_by["column"]
+
+    # SELECT 목록의 alias / 컬럼명에서 먼저 찾기
+    select_names = set()
+    for item in select_list:
+        if item.get("alias"):
+            select_names.add(item["alias"])
+        if item.get("column"):
+            select_names.add(item["column"])
+    if col_name in select_names:
+        return
+
+    # 없으면 테이블 컬럼에서 탐색
+    col_ref = {"table": order_by.get("table"), "column": col_name}
+    _resolve_column_in_schemas(col_ref, schemas, from_list, "order by")
+
+
+def _validate_limit_offset_values(limit, offset):
+    """LIMIT / OFFSET 음수 검증."""
+    if limit  is not None and limit  < 0: raise InvalidLimitOffsetError()
+    if offset is not None and offset < 0: raise InvalidLimitOffsetError()
+
+
+def _validate_select_columns(select_list, group_by, schemas, from_list):
+    """SELECT 컬럼 존재·모호성·GROUP BY 제약 검증."""
+    gb_col   = group_by["column"]           if group_by else None
+    gb_table = group_by.get("table")        if group_by else None
+
+    for item in select_list:
+        if item["type"] == "star":
+            continue
+
+        col_name  = item.get("column")
+        table_ref = item.get("table")
+
+        if item["type"] == "column":
+            try:
+                resolved_t, resolved_c = _resolve_column_in_schemas(
+                    {"table": table_ref, "column": col_name}, schemas, from_list, "select"
+                )
+            except (ColumnNotExist, AmbiguousReference, TableNotSpecified):
+                raise SelectColumnResolveError(col_name)
+
+            # GROUP BY 제약: 비집계 컬럼은 반드시 GROUP BY 컬럼이어야 함
+            if group_by:
+                gb_matches_col = (resolved_c == gb_col)
+                gb_matches_tbl = (gb_table is None or resolved_t == gb_table)
+                if not (gb_matches_col and gb_matches_tbl):
+                    raise SelectColumnNotGrouped(col_name)
+
+        elif item["type"] == "aggregate":
+            # 집계 컬럼 존재 확인
+            try:
+                _resolve_column_in_schemas(
+                    {"table": table_ref, "column": col_name}, schemas, from_list, "select"
+                )
+            except (ColumnNotExist, AmbiguousReference, TableNotSpecified):
+                raise SelectColumnResolveError(col_name)

@@ -124,35 +124,150 @@ class MyTransformer(Transformer):
     # SELECT
     # -------------------------
 
+    def aggregate_func(self, items):
+        # AGG_FUNC LP [table_name "."] column_name RP
+        # items: [Token(AGG_FUNC), Token(LP), table|None, column, Token(RP)]
+        func_name = str(items[0]).lower()
+        # items[2] = table_name or None, items[3] = column_name
+        table  = items[2] if (items[2] is not None and not isinstance(items[2], Token)) else None
+        column = items[3]  # always the column_name string (table is at [2] or None)
+        return {"type": "aggregate", "func": func_name, "table": table, "column": column}
+
+    def selected_column(self, items):
+        # Aggregate branch: items = [agg_dict, Token('AS')|None, alias|None]
+        if isinstance(items[0], dict) and items[0].get("type") == "aggregate":
+            alias = items[2] if (len(items) > 2 and items[2] is not None
+                                  and not isinstance(items[2], Token)) else None
+            return {
+                "type": "aggregate",
+                "func": items[0]["func"],
+                "table": items[0]["table"],
+                "column": items[0]["column"],
+                "alias": alias
+            }
+        # Column branch: items = [table|None, column, Token('AS')|None, alias|None]
+        table  = items[0] if (items[0] is not None and not isinstance(items[0], Token)) else None
+        column = items[1] if not isinstance(items[1], Token) else None
+        alias  = items[3] if (len(items) > 3 and items[3] is not None
+                               and not isinstance(items[3], Token)) else None
+        return {"type": "column", "table": table, "column": column, "alias": alias}
+
     def select_list(self, items):
-        # SELECT 리스트를 변환, '*'는 별도 표기로 처리
-        if len(items) == 0:
-            return ["*"]
-        return items
+        # "*" anonymous terminal is filtered out → items empty → star
+        non_tokens = [i for i in items if not isinstance(i, Token)]
+        if not non_tokens:
+            return [{"type": "star"}]
+        return non_tokens
 
     def table_expression(self, items):
-        # FROM, WHERE 등 SELECT 절을 하나의 구조로 묶음
-        res = {
-            "from_clause": items[0]
+        # Receives: from_clause result + zero or more optional clause dicts
+        # Each optional clause dict has a "_clause" key for identification.
+        # where_clause has "type" key (AND/OR/comparison/null_predicate).
+        result = {
+            "from_clause": None,
+            "join_list": [],
+            "where_clause": None,
+            "group_by": None,
+            "order_by": None,
+            "limit": None,
+            "offset": None,
         }
-        
-        if len(items) > 1 and items[1] is not None:
-            res["where_clause"] = items[1]
-            
-        # 추가 절이 있으면 여기에 계속 확장 가능
-        return res
+        for item in items:
+            if item is None:
+                continue
+            if isinstance(item, list):
+                # from_clause returns a list of referred_table strings
+                result["from_clause"] = item
+                continue
+            if not isinstance(item, dict):
+                continue
+            clause_type = item.get("_clause")
+            if clause_type == "join":
+                result["join_list"].append(item)
+            elif clause_type == "group_by":
+                result["group_by"] = item
+            elif clause_type == "order_by":
+                result["order_by"] = item
+            elif clause_type == "limit":
+                result["limit"] = item["value"]
+            elif clause_type == "offset":
+                result["offset"] = item["value"]
+            else:
+                # where_clause: has "type" but no "_clause"
+                result["where_clause"] = item
+        return result
 
     def from_clause(self, items):
-        # items[1]이 table_reference_list입니다.
+        # FROM table_reference_list — items[1] is the list
         return items[1]
 
     def table_reference_list(self, items):
-        # 여러 테이블이 올 수 있으므로 리스트로 반환
         return items
 
     def referred_table(self, items):
-        # items[0]: table_name, items[1]: alias(None) (as ...)
-        return items[0]
+        # table_name [AS table_name] — return the first (base) table name
+        non_tokens = [i for i in items if not isinstance(i, Token)]
+        return non_tokens[0]
+
+    def join_clause(self, items):
+        # JOIN table_name ON join_condition
+        non_tokens = [i for i in items if not isinstance(i, Token)]
+        table = non_tokens[0]
+        condition = non_tokens[1]
+        return {
+            "_clause": "join",
+            "table": table,
+            "left": condition["left"],
+            "right": condition["right"]
+        }
+
+    def join_condition(self, items):
+        # [table_name "."] column_name EQUAL [table_name "."] column_name
+        # Split on the EQUAL token
+        equal_idx = next(
+            (i for i, t in enumerate(items) if isinstance(t, Token) and t.type == 'EQUAL'),
+            None
+        )
+        left_items = [i for i in items[:equal_idx] if not isinstance(i, Token)]
+        right_items = [i for i in items[equal_idx + 1:] if not isinstance(i, Token)]
+
+        def make_col_ref(parts):
+            if len(parts) == 2:
+                return {"table": parts[0], "column": parts[1]}
+            return {"table": None, "column": parts[0]}
+
+        return {"left": make_col_ref(left_items), "right": make_col_ref(right_items)}
+
+    def group_by_clause(self, items):
+        # GROUP BY [table_name "."] column_name
+        non_tokens = [i for i in items if not isinstance(i, Token)]
+        if len(non_tokens) == 2:
+            table, column = non_tokens[0], non_tokens[1]
+        else:
+            table, column = None, non_tokens[0]
+        return {"_clause": "group_by", "table": table, "column": column}
+
+    def order_direction(self, items):
+        return {"_dir": str(items[0]).lower()}
+
+    def order_by_clause(self, items):
+        # ORDER BY [table_name "."] column_name [order_direction]
+        non_tokens = [i for i in items if not isinstance(i, Token)]
+        direction_item = next((i for i in non_tokens if isinstance(i, dict) and "_dir" in i), None)
+        # Exclude None (absent optionals) and the direction dict
+        col_items = [i for i in non_tokens if i is not None and not (isinstance(i, dict) and "_dir" in i)]
+        direction = direction_item["_dir"] if direction_item else "asc"
+        if len(col_items) == 2:
+            table, column = col_items[0], col_items[1]
+        else:
+            table, column = None, col_items[0]
+        return {"_clause": "order_by", "table": table, "column": column, "direction": direction}
+
+    def limit_clause(self, items):
+        return {"_clause": "limit", "value": int(items[1])}
+
+    def offset_clause(self, items):
+        return {"_clause": "offset", "value": int(items[1])}
     
     # -------------------------
     # RENAME
@@ -465,27 +580,20 @@ class MyTransformer(Transformer):
         return items[1] if len(items) > 1 else None
 
     def select_query(self, items):
-        # SELECT 쿼리를 AST 형식으로 변환
-        # print(f"{PROMPT} 'SELECT' requested")
-
-        # ### For debugging
-        # for i, item in enumerate(items):
-        #     print(f"ITEM{i}: {item}")
-           
-        # items[0]: 'select', items[1]: select_list, items[2]: table_expression
-
-        select_list = items[1]
-        from_list = items[2].get("from_clause", [])
-
+        # items[0]: Token('SELECT'), items[1]: select_list, items[2]: table_expression dict
+        table_expr = items[2]
         select_schema = {
-            "select_list": select_list,
-            "from_list": from_list
+            "select_list":  items[1],
+            "from_list":    table_expr.get("from_clause", []),
+            "join_list":    table_expr.get("join_list", []),
+            "where_clause": table_expr.get("where_clause"),
+            "group_by":     table_expr.get("group_by"),
+            "order_by":     table_expr.get("order_by"),
+            "limit":        table_expr.get("limit"),
+            "offset":       table_expr.get("offset"),
         }
 
-        return {
-            "type": "select",
-            "select_schema": select_schema
-        }
+        return {"type": "select", "select_schema": select_schema}
 
     def show_tables_query(self, items):
         # print(f"{PROMPT} 'SHOW TABLES' requested")

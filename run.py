@@ -17,7 +17,7 @@ PROMPT = "DB_2019-14473>"
 with open(LARK_PATH, "r", encoding="utf-8") as f:
     sql_grammer = f.read()
 
-sql_parser = Lark(sql_grammer, start="command", lexer="basic")
+sql_parser = Lark(sql_grammer, start='command', parser='earley', lexer='dynamic')
 ###############################################################################################
 
 ###############################################################################################
