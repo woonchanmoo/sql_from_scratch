@@ -8,38 +8,39 @@ class QueryExecutor:
         self.env = env
 
     def execute(self, query):
-        """Execute a parsed query by delegating to the appropriate query handler."""
+        """Transformer가 반환한 query dict를 query type에 따라 적절한 핸들러로 위임한다."""
         with self.env.begin(write=True) as txn:
             qtype = str(query["type"]).strip()
 
-            # query type이 create_table이면, create_table 함수를 호출한다.
             if qtype == "create_table":
                 return create_table(txn, query["schema"])
 
             elif qtype == "drop_table":
                 return drop_table(txn, query["table_name"])
-            
+
+            # EXPLAIN / DESCRIBE / DESC: 테이블 스키마 출력
             elif qtype == "explain":
                 return explain_table(txn, query["table_name"], "explain")
-            
+
             elif qtype == "describe":
                 return explain_table(txn, query["table_name"], "describe")
-            
+
             elif qtype == "desc":
                 return explain_table(txn, query["table_name"], "desc")
-            
+
+            # SHOW TABLES: 전체 테이블 목록 출력
             elif qtype == "show_tables":
                 return show_tables(txn)
 
             elif qtype == "insert":
                 return insert_into_table(txn, query["insert_schema"])
-            
+
             elif qtype == "rename":
                 return rename_table(txn, query["rename_schema"])
-            
+
             elif qtype == "truncate_table":
                 return truncate_table(txn, query["table_name"])
-            
+
             elif qtype == "delete":
                 return delete_from_table(txn, query["delete_schema"])
 

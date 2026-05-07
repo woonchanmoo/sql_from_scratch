@@ -640,7 +640,7 @@ def select_table(txn, select_schema):
         if group_by:
             rows, headers = _apply_group_by(rows, group_by, select_list, schemas)
         else:
-            rows, headers = _project_columns(rows, select_list, schemas, from_list)
+            rows, headers = _project_columns(rows, select_list, schemas, from_list, all_table_names)
 
         # 6. ORDER BY
         if order_by:
@@ -757,21 +757,40 @@ def _evaluate_where_select(row, node):
     return False
 
 
-def _project_columns(rows, select_list, schemas, from_list):
+def _make_header(item):
+    """select_list item → 출력 헤더 문자열 생성.
+    우선순위: alias > table.column > column
+    """
+    if item["type"] == "column":
+        if item.get("alias"):
+            return item["alias"]
+        if item.get("table"):
+            return f"{item['table']}.{item['column']}"
+        return item["column"]
+    if item["type"] == "aggregate":
+        if item.get("alias"):
+            return item["alias"]
+        col_part = f"{item['table']}.{item['column']}" if item.get("table") else item["column"]
+        return f"{item['func']}({col_part})"
+    return ""
+
+
+def _project_columns(rows, select_list, schemas, from_list, all_table_names=None):
     """GROUP BY 없이 SELECT 컬럼 목록에 따라 행을 투영한다."""
-    # ── STAR: all columns from all FROM tables in schema order
+    tables_for_star = all_table_names if all_table_names is not None else from_list
+    # ── STAR: all columns from all tables (FROM + JOIN) in schema order
     if len(select_list) == 1 and select_list[0]["type"] == "star":
-        keys    = [(t, c) for t in from_list for c in schemas[t]["column_names"]]
-        headers = [c for _, c in keys]
+        keys = [(t, c) for t in tables_for_star for c in schemas[t]["column_names"]]
+        if len(tables_for_star) > 1:
+            headers = [f"{t}.{c}" for t, c in keys]
+        else:
+            headers = [c for _, c in keys]
         return [[row.get(k) for k in keys] for row in rows], headers
 
     # ── Specific columns (and/or global aggregates)
     headers = []
     for item in select_list:
-        if item["type"] == "column":
-            headers.append(item.get("alias") or item["column"])
-        elif item["type"] == "aggregate":
-            headers.append(item.get("alias") or f"{item['func']}({item['column']})")
+        headers.append(_make_header(item))
 
     has_agg = any(item["type"] == "aggregate" for item in select_list)
 
@@ -816,10 +835,7 @@ def _apply_group_by(rows, group_by, select_list, schemas):
     # 헤더 결정
     headers = []
     for item in select_list:
-        if item["type"] == "column":
-            headers.append(item.get("alias") or item["column"])
-        elif item["type"] == "aggregate":
-            headers.append(item.get("alias") or f"{item['func']}({item['column']})")
+        headers.append(_make_header(item))
 
     # 각 그룹 → 결과 행
     result_rows = []
@@ -861,13 +877,32 @@ def _compute_aggregate(values, func):
 def _apply_order_by(rows, headers, order_by):
     """ORDER BY 절에 따라 rows를 정렬한다."""
     col_name  = order_by["column"]
+    table_ref = order_by.get("table")
     direction = order_by["direction"]   # "asc" | "desc"
 
-    # headers에서 정렬 기준 인덱스 찾기 (alias / 컬럼명 모두 지원)
-    try:
-        idx = headers.index(col_name)
-    except ValueError:
-        return rows                     # 컬럼 없으면 정렬 생략 (validation에서 보장)
+    idx = None
+    if table_ref:
+        # table.column 형식으로 먼저 탐색 (JOIN 결과 헤더 형식)
+        qualified = f"{table_ref}.{col_name}"
+        if qualified in headers:
+            idx = headers.index(qualified)
+        elif col_name in headers:
+            # 단일 테이블 헤더 형식 폴백
+            idx = headers.index(col_name)
+    else:
+        if col_name in headers:
+            # alias 또는 단일 테이블 컬럼명 직접 일치
+            idx = headers.index(col_name)
+        else:
+            # "table.column" 형식 헤더에서 suffix 탐색
+            suffix = f".{col_name}"
+            matches = [i for i, h in enumerate(headers) if h.endswith(suffix)]
+            if len(matches) == 1:
+                idx = matches[0]
+            # len > 1 → AmbiguousReference (validation에서 보장)
+
+    if idx is None:
+        return rows
 
     reverse = direction == "desc"
 

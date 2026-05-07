@@ -6,15 +6,15 @@ import json
 # 1. meta:tables
 # 1.1. convert tables set into list and put it into meta:tables
 def add_tables(txn, table_name: str):
-
+    # 현재 테이블 목록에 새 테이블을 추가하고 정렬 후 저장
     tables = get_tables(txn)
     tables.add(table_name)
 
     txn.put(b"meta:tables",
             json.dumps(sorted(list(tables))).encode())
-    
-def remove_table(txn, table_name: str):
 
+def remove_table(txn, table_name: str):
+    # 테이블 목록에서 해당 테이블을 제거하고 저장
     tables = get_tables(txn)
     tables.remove(table_name)
 

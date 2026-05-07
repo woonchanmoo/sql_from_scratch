@@ -7,7 +7,7 @@ import re
 # 🔹 COMMON UTIL
 ##################################################
 
-# 데이터 타입 비교를 지원하는 헬퍼 (int, date, char(n) 비교)
+# 두 컬럼 타입이 동일한지 비교 (int/date는 직접 비교, char는 base+length 모두 일치해야 함)
 def is_same_type(t1, t2):
     if t1 == t2:
         return True
@@ -38,7 +38,7 @@ def validate_columns(columns):
 
 # 3. CharLengthError: Char length should be over 0
 def validate_char_length(schema):
-    for col, info in schema["columns"].items():
+    for _, info in schema["columns"].items():
         t = info["type"]
 
         if isinstance(t, dict) and t["base"] == "char":
@@ -131,8 +131,9 @@ def validate_table_exists(txn, table_name, command_name):
         raise NoSuchTable(command_name)
 
 
-# DropReferencedTableError: Drop table has failed: '#tableName' is referenced by another table
+# DropReferencedTableError: Drop table has failed: ‘#tableName’ is referenced by another table
 def validate_drop_table(txn, table_name):
+    # 다른 테이블의 FK가 해당 테이블을 참조하면 DROP 불가
     tables = get_tables(txn)
 
     for t in tables:
@@ -151,6 +152,7 @@ def validate_drop_table(txn, table_name):
 
 # TruncateReferencedTableError: Truncate table has failed: ‘#tableName’ is referenced by another table
 def validate_truncate_table(txn, table_name):
+    # 다른 테이블의 FK가 해당 테이블을 참조하면 TRUNCATE 불가
     tables = get_tables(txn)
 
     for t in tables:
@@ -169,6 +171,7 @@ def validate_truncate_table(txn, table_name):
 
 # RenameAlreadyExistError: Rename table has failed: there is already a table named ‘#newTableName’
 def validate_rename_table(txn, new_table_name):
+    # 변경할 이름이 이미 존재하면 RENAME 불가
     tables = get_tables(txn)
     if new_table_name in tables:
         raise RenameAlreadyExistError(new_table_name)
@@ -543,13 +546,17 @@ def _validate_select_table_existence(txn, from_list):
 
 
 def _resolve_column_in_schemas(col_ref, schemas, from_list, clause_name):
-    """col_ref를 (table_name, col_name) 으로 해석한다."""
+    """col_ref를 (table_name, col_name) 으로 해석한다.
+    table prefix가 있으면 해당 테이블만 확인, 없으면 from_list 전체 탐색.
+    """
     table_ref = col_ref.get("table")
     col_name  = col_ref["column"]
 
     if table_ref is not None:
+        # 명시된 테이블이 FROM/JOIN에 없으면 TableNotSpecified
         if table_ref not in from_list:
             raise TableNotSpecified(clause_name)
+        # 해당 테이블에 컬럼이 없으면 ColumnNotExist
         if col_name not in schemas.get(table_ref, {}).get("columns", {}):
             raise ColumnNotExist(clause_name)
         return (table_ref, col_name)
@@ -564,13 +571,15 @@ def _resolve_column_in_schemas(col_ref, schemas, from_list, clause_name):
 
 
 def _get_operand_type_multi(operand, schemas, from_list):
-    """operand의 정적 타입을 반환한다 ("int"|"date"|"char"|"str_literal"|None)."""
+    """operand의 정적 타입을 반환한다 ("int"|"date"|"char"|"str_literal"|None).
+    리터럴 값은 Python 타입으로 판별하고, 컬럼 참조는 스키마에서 조회한다.
+    """
     if operand["type"] == "value":
         val = operand["value"]
         if isinstance(val, int):   return "int"
         if isinstance(val, str):   return "str_literal"
         return None                # null literal
-    # column
+    # column 참조: 스키마에서 타입 조회
     try:
         table_name, col_name = _resolve_column_in_schemas(operand, schemas, from_list, "where")
         col_type = schemas[table_name]["columns"][col_name]["type"]
@@ -580,14 +589,18 @@ def _get_operand_type_multi(operand, schemas, from_list):
 
 
 def _validate_comparison_types_multi(comparison, schemas, from_list):
-    """multi-table 컨텍스트에서 comparison 타입·연산자 호환성을 검증한다."""
+    """multi-table 컨텍스트에서 comparison 타입·연산자 호환성을 검증한다.
+    char 타입에는 대소 비교 불가, null 리터럴이 comparison에 오면 IncomparableError.
+    """
     left, right, op = comparison["left"], comparison["right"], comparison["operator"]
     l_type = _get_operand_type_multi(left,  schemas, from_list)
     r_type = _get_operand_type_multi(right, schemas, from_list)
 
+    # null 리터럴이 포함된 comparison은 항상 IncomparableError
     if l_type is None or r_type is None:
         raise IncomparableError()
 
+    # str_literal은 char/date 컬럼 모두와 호환; int와는 불가
     if l_type == "str_literal" and r_type == "str_literal":
         effective = "char"
     elif l_type == "str_literal":
@@ -600,12 +613,15 @@ def _validate_comparison_types_multi(comparison, schemas, from_list):
         if l_type != r_type: raise IncomparableError()
         effective = l_type
 
+    # char 타입에서 대소 비교 연산자 사용 금지
     if effective == "char" and op not in ("=", "!="):
         raise IncomparableError()
 
 
 def _validate_where_node_select(node, schemas, from_list):
-    """WHERE AST 노드를 재귀 검증한다 (다중 테이블)."""
+    """WHERE AST 노드를 재귀 검증한다 (다중 테이블).
+    and/or는 재귀, comparison은 컬럼 존재·타입 검증, null_predicate는 컬럼 존재 검증.
+    """
     t = node["type"]
     if t in ("and", "or"):
         for op in node["operands"]:
@@ -621,12 +637,14 @@ def _validate_where_node_select(node, schemas, from_list):
 
 
 def _validate_where_select(where_clause, schemas, from_list):
-    """SELECT WHERE 절 검증 (다중 테이블)."""
+    """SELECT WHERE 절 검증 (다중 테이블) 진입점."""
     _validate_where_node_select(where_clause, schemas, from_list)
 
 
 def _validate_join_columns(join_list, schemas, from_list):
-    """JOIN ON 컬럼 존재 및 타입 호환성 검증."""
+    """JOIN ON 컬럼 존재 및 타입 호환성 검증.
+    누적 JOIN을 지원하기 위해 JOIN 테이블을 available에 순서대로 추가한다.
+    """
     available = list(from_list)
     for jc in join_list:
         join_table = jc["table"]
@@ -640,6 +658,7 @@ def _validate_join_columns(join_list, schemas, from_list):
         except ColumnNotExist:
             raise ColumnNotExist("join")
 
+        # ON 조건의 두 컬럼은 동일한 타입이어야 함
         l_type = schemas[lt]["columns"][lc]["type"]
         r_type = schemas[rt]["columns"][rc]["type"]
         if not is_same_type(l_type, r_type):
@@ -653,7 +672,9 @@ def _validate_group_by_column(group_by, schemas, from_list):
 
 
 def _validate_order_by_column(order_by, schemas, from_list, select_list):
-    """ORDER BY 컬럼 검증 (alias 우선, 없으면 실제 컬럼 탐색)."""
+    """ORDER BY 컬럼 검증.
+    SELECT 목록의 alias/컬럼명을 우선 탐색하고, 없으면 실제 테이블 컬럼에서 탐색한다.
+    """
     col_name = order_by["column"]
 
     # SELECT 목록의 alias / 컬럼명에서 먼저 찾기
@@ -666,13 +687,13 @@ def _validate_order_by_column(order_by, schemas, from_list, select_list):
     if col_name in select_names:
         return
 
-    # 없으면 테이블 컬럼에서 탐색
+    # alias에 없으면 테이블 스키마에서 탐색 (존재·모호성 검증 포함)
     col_ref = {"table": order_by.get("table"), "column": col_name}
     _resolve_column_in_schemas(col_ref, schemas, from_list, "order by")
 
 
 def _validate_limit_offset_values(limit, offset):
-    """LIMIT / OFFSET 음수 검증."""
+    """LIMIT / OFFSET 값이 음수이면 InvalidLimitOffsetError를 발생시킨다."""
     if limit  is not None and limit  < 0: raise InvalidLimitOffsetError()
     if offset is not None and offset < 0: raise InvalidLimitOffsetError()
 
@@ -684,6 +705,13 @@ def _validate_select_columns(select_list, group_by, schemas, from_list):
 
     for item in select_list:
         if item["type"] == "star":
+            if group_by:
+                # star는 모든 컬럼을 포함하므로 GROUP BY 컬럼 외 비집계 컬럼이 반드시 존재함
+                for tbl in from_list:
+                    for col in schemas.get(tbl, {}).get("column_names", []):
+                        is_gb = (col == gb_col and (gb_table is None or tbl == gb_table))
+                        if not is_gb:
+                            raise SelectColumnNotGrouped(col)
             continue
 
         col_name  = item.get("column")
