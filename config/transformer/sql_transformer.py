@@ -391,7 +391,6 @@ class MyTransformer(Transformer):
         }
 
     def delete_query(self, items):
-        print(f"{PROMPT} 'DELETE' requested")
 
         # # ### For debugging
         # for i, item in enumerate(items):

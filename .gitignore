@@ -1,7 +1,9 @@
 
 # 특정 파일 무시
 ClAUDE.md
-test_queries.py
+query_test.md
+test_query.json
+test_runner.py
 
 # 특정 확장자 무시
 *.log
